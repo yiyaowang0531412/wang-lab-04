@@ -1,0 +1,986 @@
+---
+title: "Binary Logistic Regression: Model Specification, Comparison, and Interpretation"
+author: "Yiyao"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-tools: true
+    embed-resources: true
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Overview
+
+In this lab, you will apply binary logistic regression analysis to investigate the factors associated with surviving the Titanic crash. Rather than estimating a single binary logistic regression model, you will develop and compare a series of competing models, evaluate their performance, examine binary logistic regression diagnostics, and interpret the results of your preferred model.
+
+Your goal is to produce a **reproducible statistical report** that demonstrates not only how to estimate binary logistic regression models, but also how to make and justify decisions about model specification and selection.
+
+You will complete the analysis in **R**, document your workflow in **Quarto**, and publish the rendered report using **GitHub Pages**.
+
+### **Learning objectives**
+
+By the end of this lab, you should be able to:
+
+1.  **Specify multiple binary logistic regression models** based on substantive predictions.
+
+2.  **Estimate and compare** nested binary logistic regression models using AIC, BIC and likelihood-ratio tests.
+
+3.  **Evaluate binary logistic regression assumptions** and identify potentially influential observations.
+
+4.  **Select** a preferred model and **justify** that decision.
+
+5.  **Extract, report, and interpret** binary logistic regression coefficients using `broom.mixed::tidy()`.
+
+6.  **Visualize** your data using the `ggeffects::gpredict()`
+
+7.  **Communicate** your analysis in a reproducible Quarto report.
+
+------------------------------------------------------------------------
+
+## **Part 1: Configure your project and examine the data**
+
+### **1.1. Create your project**
+
+Create a new GitHub repository for this lab, following the workflow established in Lab 1.
+
+Your repository should contain:
+
+- An RStudio project connected to your GitHub repository.
+
+- An index.qmd file containing your analysis and written report.
+
+- A \_quarto.yml file configured to render your report to the docs/ directory.
+
+- A docs/ directory containing the rendered website.
+
+Your analysis must be reproducible from the files in your repository.
+
+**Important:** As in Lab 1, you should distinguish between commands used for interactive exploration in the R Console and commands required to reproduce your results in Quarto.
+
+You may use the Console to inspect datasets, experiment with model specifications, and troubleshoot errors. However, every command necessary to generate the results presented in your report must appear in your Quarto document.
+
+### **1.2. Load the required packages**
+
+You will need the following packages:
+
+- `dplyr` and `tidyr` for data manipulation.
+
+- `ggplot2` for visualization.
+
+- `broom.mixed` for extracting binary logistic regression results.
+
+- `performance` for binary logistic regression diagnostics and model comparisons.
+
+- `gt` for formatting tables.
+
+- `ggeffects` for binary logistic regression visualization
+
+- `glmmTBM` for binary logistic regression models.
+
+- `DHARMa` for binary logistic regression diagnostic plots.
+
+- `titanic` for the dataset for today’s lab.
+
+Install any missing packages in the **R Console**. Load the packages in a setup chunk near the beginning of your Quarto document.
+
+### **1.3. Load the dataset**
+
+We will use the `titanic_train` dataset from the `titanic` package. I have adapted this dataset to enhance interpretability and ensure that we are working with the same number of cases for each model. Please run this code below to load the data for this assignment:
+
+```{r, setup}
+
+
+# install.packages(c(
+#   "glmmTMB", "dplyr", "tidyr", "ggplot2",
+#   "broom.mixed", "performance", "gt",
+#   "readr", "DHARMa", "ggeffects", "titanic"
+# ))
+
+
+library(glmmTMB)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom.mixed)
+library(performance)
+library(gt)
+library(readr)
+library(DHARMa)
+library(ggeffects)
+library(titanic)
+
+titanic <- titanic_train
+
+titanic <- titanic |>
+  select(Survived, Sex, Age, Pclass) |>
+  drop_na() |>
+  mutate(
+    Sex.Binary = case_when(
+      Sex == "male" ~ 0,
+      Sex == "female" ~ 1)) |>
+  mutate(
+    Survived.Char = case_when(
+      Survived == 0 ~ "Died",
+      Survived == 1 ~ "Survived")) |>
+  mutate(
+    Pclass.Char = case_when(
+      Pclass == "1" ~ "First Class",
+      Pclass == "2" ~ "Second Class",
+      Pclass == "3" ~ "Third Class")) |>
+  mutate(Pclass = factor(Pclass, levels = c(1, 2, 3))) |>
+  select(Survived, Survived.Char, Sex, Sex.Binary, Pclass, Pclass.Char, Age)
+ 
+n <- nrow(titanic)
+```
+
+This dataset contains data on **714 passengers**. The binary outcome variable is `Survived`: whether the passenger survived or died in the Titanic crash. Several other variables summarize characteristics of the Titanic passengers that could influence survival.
+
+For this lab, we will focus on four variables:
+
+|  |  |  |
+|------------------------|------------------------|------------------------|
+| **Variable** | **Description** | **Role** |
+| Survived | Whether a passenger survived or died in the crash | Outcome |
+| Sex | Sex reported on legal documents | Predictor |
+| Age | Self-reported age | Predictor |
+| Pclass | What type of ticket was purchased; our proxy for socioeconomic status (SES) | Predictor |
+
+### **1.4. Explore the data**
+
+Before estimating any models, familiarize yourself with the variables and their cell counts.
+
+**In the R Console:**
+
+- Inspect the first several observations.
+
+- Examine the dataset's structure.
+
+- Calculate descriptive statistics for continuous variables.
+
+- Explore the cell counts of the variables.
+
+**In your Quarto report:**
+
+Include:
+
+1.  A formatted table reporting the mean, standard deviation, minimum, and maximum for the continuous variable.
+
+```{r, mean table}
+
+age_summary <- titanic |>
+  summarise(
+    Mean = mean(Age),
+    SD = sd(Age),
+    Minimum = min(Age),
+    Maximum = max(Age)
+  )
+
+age_summary |>
+  gt() |>
+  tab_header(title = "Descriptive Statistics for Age") |>
+  fmt_number(
+    columns = everything(),
+    decimals = 2
+  )
+
+
+```
+
+
+2.  A formatted table reporting the cell counts for each categorical variable.
+
+```{r, count table}
+
+
+categorical_summary <- titanic |>
+  select(Survived.Char, Sex, Pclass.Char) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Category"
+  ) |>
+  count(Variable, Category, name = "Count") |>
+  group_by(Variable) |>
+  mutate(Percentage = Count / sum(Count) * 100) |>
+  ungroup()
+
+categorical_summary |>
+  gt(groupname_col = "Variable") |>
+  tab_header(
+    title = "Categorical Variable Frequencies"
+  ) |>
+  fmt_number(
+    columns = Percentage,
+    decimals = 1
+  )
+
+
+```
+
+3.  A short paragraph describing the most important patterns you observe.
+
+The dataset included 714 passengers, with a mean age of 29.70 years (SD = 14.53), ranging from 0.42 to 80 years. The categorical variables were unevenly distributed. Nearly half of the passengers traveled in third class (49.7%), compared with first class (26.1%) and second class (24.2%). Male passengers also outnumbered female passengers (63.4% vs. 36.6%), and more passengers died (59.4%) than survived (40.6%). These distributions suggest an imbalance across passenger characteristics, particularly ticket class and sex.
+
+Your discussion should consider whether the cell counts for the categorical variables are evenly distributed and whether the exploratory results are consistent with your expectations.
+
+------------------------------------------------------------------------
+
+## **Part 2: Specify competing binary logistic regression models**
+
+### **2.1. Develop your predictions**
+
+Before fitting your models, write a short paragraph explaining why you expect the three predictors to be associated with survival of the Titanic crash.
+
+Consider the following questions:
+
+- How might gender/sex have influenced how people were treated in emergency situations in 1912?
+
+- Could one's ticket class (our proxy for socioeconomic status \[SES\]) have influenced who was prioritized in emergency situations?
+
+- How might age, particularly whether someone was a child or an adult, have influenced how they were treated in emergency situations?
+
+These predictions should motivate your model specifications.
+
+I predict that sex, ticket class, and age will be associated with the likelihood of surviving the Titanic disaster. First, female passengers may have had higher survival probabilities than male passengers due to the historical practice of prioritizing women and children during emergencies. Second, passengers in higher ticket classes may have had better access to lifeboats and evacuation resources, resulting in higher survival probabilities. Finally, younger passengers may have been more likely to survive because children were prioritized during evacuation. Therefore, I expect all three predictors to contribute to explaining survival outcomes.
+
+### **2.2. Specify four nested models**
+
+Estimate the following models:
+
+|  |  |  |
+|------------------------|------------------------|------------------------|
+| **Model** | **Predictors** | **Purpose** |
+| mod0: Null | Intercept only | Establish a baseline |
+| mod1: Sex | Sex | Evaluate sex |
+| mod2: Sex + Pclass | Sex, Pclass | Evaluate the additional contribution of ticket class |
+| mod3: Sex + Pclass + Age | Sex, Pclass, Age | Evaluate the additional contribution of age |
+
+Use `glmmTMG()` to estimate each model, assigning each fitted model to a clearly named object.
+
+```{r, fitting models}
+
+
+mod0 <- glmmTMB(
+  Survived ~ 1,
+  data = titanic,
+  family = binomial(link = "logit")
+)
+
+mod1 <- glmmTMB(
+  Survived ~ Sex.Binary,
+  data = titanic,
+  family = binomial(link = "logit")
+)
+
+mod2 <- glmmTMB(
+  Survived ~ Sex.Binary + Pclass,
+  data = titanic,
+  family = binomial(link = "logit")
+)
+
+mod3 <- glmmTMB(
+  Survived ~ Sex.Binary + Pclass + Age,
+  data = titanic,
+  family = binomial(link = "logit")
+)
+
+
+```
+
+### **2.3. Explore your fitted models**
+
+In the **R Console**, use `summary()` to inspect the results of each fitted model.
+
+Pay particular attention to:
+
+- The estimated binary logistic regression coefficients.
+
+- The direction and magnitude of predictor associations.
+
+- The model AIC and BIC.
+
+- How the intercept changes as additional predictors are included.
+
+In your Quarto report, briefly explain how the interpretation of the intercept changes between mod1, mod2, and mod3.
+
+You do not need to reproduce the complete `summary()` output for every model.
+
+The interpretation of the intercept changes across the three models as additional predictors are included. In mod1, the intercept represents the log-odds of survival for male passengers. In mod2, it represents the log-odds of survival for male passengers in first class. Finally, in mod3, the intercept represents the log-odds of survival for male first-class passengers at age zero. Thus, the intercept becomes conditional on additional reference values as model complexity increases. The intercept in mod3 has limited substantive interpretability because age zero is not a particularly meaningful reference point for passenger survival.
+
+------------------------------------------------------------------------
+
+## **Part 3: Compare model performance**
+
+You will compare the four models using **nested-model χ²-tests** and two measures of overall performance.
+
+### **3.1. Conduct nested-model χ²-tests**
+
+Use `anova()` to compare all four models in a single call, in the order mod0, mod1, mod2, mod3.
+
+The resulting table will allow you to evaluate three questions:
+
+1.  Does `Sex` explain significantly more variation than the intercept-only model?
+
+2.  Does adding `Pclass` improve model fit beyond `Sex`?
+
+3.  Does adding `Age` increase improve model fit beyond `Sex` and `Pclass`?
+
+```{r, nested tests}
+model_tests <- anova(
+  mod0,
+  mod1,
+  mod2,
+  mod3
+)
+
+model_tests
+
+```
+
+Retain the following information from the ANOVA results:
+
+- Residual degrees of freedom.
+
+- Change in degrees of freedom.
+
+- χ²-statistic for the nested-model comparison.
+
+- p-value for the nested-model comparison.
+
+Use `select()` and `rename()` to organize these results into a clearly labelled data frame.
+
+```{r, organizing nested tests}
+
+nested_tests <- model_tests |>
+  as.data.frame() |>
+  tibble::rownames_to_column("Model") |>
+  mutate(
+    Residual_df = nobs(mod0) - Df
+  ) |>
+  select(
+    Model,
+    Residual_df,
+    `Chi Df`,
+    Chisq,
+    `Pr(>Chisq)`
+  ) |>
+  rename(
+    Nested_df = `Chi Df`,
+    Nested_chisq = Chisq,
+    Nested_p = `Pr(>Chisq)`
+  )
+
+nested_tests
+
+
+```
+
+### **3.2. Extract nested model-level performance statistics**
+
+Use `broom.mixed::glance()` to extract nested model-level statistics for each of the four fitted models.
+
+Combine the results into one data frame using `rbind()` or `bind_rows()`.
+
+Include a column identifying each model.
+
+For this lab, focus on:
+
+- **AIC:** Evaluates model fit while penalizing model complexity. Lower values indicate a preferred balance between fit and complexity.
+
+- **BIC:** Similar to AIC, but applies a stronger penalty for model complexity. Lower values are preferred.
+
+- **Likelihood-ratio test (χ²):** Tests whether adding predictors significantly improves model fit relative to the preceding model. A statistically significant p-value (p \< .05) indicates that the additional predictors improve model fit.
+
+```{r, model level performance}
+
+
+model_performance <- bind_rows(
+  glance(mod0) |> mutate(Model = "mod0"),
+  glance(mod1) |> mutate(Model = "mod1"),
+  glance(mod2) |> mutate(Model = "mod2"),
+  glance(mod3) |> mutate(Model = "mod3")
+) |>
+  select(Model, AIC, BIC, logLik, deviance)
+
+model_performance
+
+```
+
+### **3.3. Create a combined model-comparison table**
+
+Combine the model-performance statistics with the nested-model test results.
+
+You may use `cbind()` because both sets of results contain the same four models in the same order.
+
+Use `gt()` to create a professionally formatted table containing:
+
+|  |  |
+|------------------------------------|------------------------------------|
+| **Column** | **Meaning** |
+| Model | Model identifier |
+| AIC | Evaluates model fit while penalizing model complexity |
+| BIC | Similar to AIC, but applies a stronger penalty for model complexity. |
+| logLik | Measures how well a model explains the observed data.  |
+| deviance | Measures how poorly a model fits the observed data, relative to a perfectly fitting (saturated) model. Obtained by multiplying the logLik by -2. |
+| Residual df | Residual degrees of freedom |
+| Nested df | Degrees of freedom added by the new predictor(s) |
+| Nested χ² | χ²-statistic comparing the model with its predecessor |
+| Nested p | p-value for the nested comparison |
+
+Format the numerical results to an appropriate number of decimal places.
+
+```{r, combined table}
+
+
+combined_comparison <- model_performance |>
+  left_join(nested_tests, by = "Model")
+
+
+combined_comparison |>
+  mutate(
+    Nested_p = case_when(
+      is.na(Nested_p) ~ "—",
+      Nested_p < 0.001 ~ "< .001",
+      TRUE ~ sprintf("%.3f", Nested_p)
+    )
+  ) |>
+  gt() |>
+  tab_header(
+    title = "Binary Logistic Regression Model Comparison"
+  ) |>
+  cols_label(
+    Residual_df = "Residual df",
+    Nested_df = "Nested df",
+    Nested_chisq = "Nested χ²",
+    Nested_p = "Nested p"
+  ) |>
+  fmt_number(
+    columns = c(AIC, BIC, logLik, deviance, Nested_chisq),
+    decimals = 2
+  )
+
+
+```
+
+### **3.4. Interpret the comparisons**
+
+Write a paragraph addressing the following:
+
+1.  Which model provides the best fit to the data, considering both model fit and complexity?
+
+2.  How do AIC and BIC change as predictors are added?
+
+3.  Which additions of predictors produce statistically significant improvements in model fit, based on the likelihood-ratio tests?
+
+4.  Do AIC and BIC support the same conclusions as the likelihood-ratio tests? Why or why not?
+
+Explain what the pattern of results suggests about the contribution of each predictor.
+
+The model comparisons suggest that mod3, which includes sex, ticket class, and age, provides the best balance between model fit and complexity. Both AIC and BIC decreased consistently as predictors were added, with mod3 having the lowest AIC (657.28) and BIC (680.14). Likelihood-ratio tests indicated that adding sex significantly improved model fit over the null model, χ²(1) = 213.82, p < .001; adding ticket class further improved model fit, χ²(2) = 78.27, p < .001; so did adding age, χ²(1) = 25.15, p < .001. Thus, AIC, BIC, and the likelihood-ratio tests support the same conclusion: each additional predictor improves model fit sufficiently to justify the increased complexity. These findings suggest that all three passenger characteristics contribute to explaining survival outcomes.
+
+------------------------------------------------------------------------
+
+## **Part 4: Evaluate binary logistic regression diagnostics**
+
+### **4.1. Examine the assumptions**
+
+Select the most promising model based on your comparisons in Part 3.
+
+Evaluate the following binary logistic regression assumptions:
+
+- **Linearity to the logit scale:** Is the relationship between predictors and the outcome adequately represented by the model? Is the residual variability reasonably uniform across fitted values? (use `DHARMa::` diagnostic plots)
+
+- **Collinearity:** Are predictors so strongly related that their unique contributions may be difficult to estimate precisely?
+
+- **Complete separation:** Does any predictor perfectly predict the outcome variable?
+
+- **Influential observations:** Are there observations that may disproportionately influence the fitted model? (use `DHARMa::` again)
+
+- **Events per predictor:** Are there enough events for each coefficient of your predictor variable? 
+
+```{r, checking assumptions}
+
+set.seed(9041)
+
+# Simulate residuals for our preferred model
+residuals_mod3 <- DHARMa::simulateResiduals(
+  fittedModel = mod3,
+  n = 1000
+)
+
+# Overall residual diagnostics
+plot(residuals_mod3)
+
+# Residuals against age
+DHARMa::plotResiduals(
+  residuals_mod3,
+  form = titanic$Age
+)
+
+#collinearity
+collinearity_results <- performance::check_collinearity(
+  mod3
+)
+
+collinearity_results
+
+#seperation
+range(predict(mod3, type = "response"))
+
+#outliers
+testOutliers(residuals_mod3)
+
+#events
+n_event <- sum(titanic$Survived == 1)
+n_nonevent <- sum(titanic$Survived == 0)
+
+n_coef <- length(fixef(mod3)$cond) - 1
+
+events_per_predictor <- n_event / n_coef
+nonevents_per_predictor <- n_nonevent / n_coef
+
+data.frame(
+  Events = n_event,
+  Non_events = n_nonevent,
+  Coefficients = n_coef,
+  Events_per_predictor = events_per_predictor,
+  Nonevents_per_predictor = nonevents_per_predictor
+)
+
+
+```
+
+### **4.2. Report your diagnostic findings**
+
+Include at least one set of diagnostic plots in your Quarto report.
+
+Write a short paragraph explaining:
+
+1.  Which assumptions appear reasonably satisfied.
+
+2.  Whether any potential problems are evident.
+
+3.  Whether those problems affect your confidence in or interpretation of the model.
+
+Avoid treating binary logistic regression assumptions as a mechanical checklist. Explain what the diagnostic results imply for the interpretation of your findings.
+
+Model diagnostics suggested that mod3 was generally appropriate for the data. DHARMa residual diagnostics showed no significant deviations from the expected residual distribution (KS test, p = .512) or evidence of dispersion problems (p = .814). Residual plots against predicted values and age did not reveal significant systematic patterns. Multicollinearity was low, with VIF values ranging from 1.07 to 1.42. The model showed no obvious symptoms of complete separation, with predicted probabilities ranging from .017 to .976 and no apparent convergence problems. The DHARMa outlier test was not statistically significant (p = .057), although this does not rule out influential observations. Finally, the dataset contained 290 survival events and 424 non-events, corresponding to 72.5 events and 106 non-events per predictor coefficient. Both values substantially exceeded the recommended minimum of 10. Overall, the diagnostics did not reveal major concerns that would prevent interpretation of mod3.
+
+------------------------------------------------------------------------
+
+## **Part 5: Select and report your preferred model**
+
+### **5.1. Select a model**
+
+Identify the model you believe provides the most defensible representation of the relationship between surviving the sinking of the Titanic and our passenger-specific variables.
+
+Your decision should consider:
+
+- Nested-model χ²-tests.
+
+- AIC.
+
+- BIC.
+
+- Model complexity.
+
+- Diagnostic findings.
+
+- Substantive interpretability.
+
+You are **not required to select the most complex model**.
+
+Write a paragraph explaining why your preferred model is more appropriate than the alternatives.
+
+```{r, selecting model}
+
+selected_row <- combined_comparison |>
+  filter(Nested_p < .05) |>
+  slice_tail(n = 1)
+
+# Extract selected model name
+selected_name <- selected_row$Model
+
+# Match name to fitted model
+selected_model <- switch(
+  selected_name,
+  "mod0" = mod0,
+  "mod1" = mod1,
+  "mod2" = mod2,
+  "mod3" = mod3
+)
+
+# Inspect selected model
+selected_name
+AIC(selected_model)
+BIC(selected_model)
+
+
+```
+
+Model 3 (mod3), including sex, ticket class, and age, was selected as the preferred model. It had the lowest AIC (657.28) and BIC (680.14) among the four competing models, and likelihood-ratio tests indicated that each additional predictor significantly improved model fit. Furthermore, diagnostic analyses revealed no major concerns regarding residual behavior, multicollinearity, or complete separation. The model also had sufficient events and non-events relative to the number of estimated coefficients. Therefore, mod3 provides the most defensible balance of model fit, complexity, and substantive interpretability among the models examined.
+
+### **5.2. Create a coefficient table**
+
+Use `broom.mixed::tidy()` to extract the unstandardized binary logistic regression coefficients from your preferred model.
+
+Request 95% confidence intervals.
+
+Use `gt()` to create a formatted coefficient table containing:
+
+- Predictor name.
+
+- Unstandardized coefficient estimate.
+
+- Standard error.
+
+- 95% confidence interval.
+
+- p-value.
+
+Do not simply paste the output from summary() into your report.
+
+```{r, coefficient table}
+
+
+
+coefficient_results <- broom.mixed::tidy(
+  selected_model,
+  effects = "fixed",
+  component = "cond",
+  conf.int = TRUE,
+  conf.level = 0.95
+)
+
+coefficient_results
+
+
+
+coefficient_results |>
+  select(
+    term,
+    estimate,
+    std.error,
+    conf.low,
+    conf.high,
+    p.value
+  ) |>
+  gt() |>
+  cols_label(
+    term = "Predictor",
+    estimate = "Estimate",
+    std.error = "SE",
+    conf.low = "95% CI lower",
+    conf.high = "95% CI upper",
+    p.value = "p"
+  ) |>
+  fmt_number(
+    columns = c(
+      estimate,
+      std.error,
+      conf.low,
+      conf.high
+    ),
+    decimals = 3
+  ) |>
+  fmt(
+    columns = p.value,
+    fns = function(x) {
+      ifelse(
+        x < .001,
+        "< .001",
+        sprintf("%.3f", x)
+      )
+    }
+  )
+
+
+
+```
+
+### **5.3. Interpret the coefficients**
+
+Write a paragraph interpreting the binary logistic regression coefficients in your preferred model.
+
+For each included predictor:
+
+1.  Interpret the coefficient on the **log-odds scale**.
+
+2.  Transform and interpret the coefficients as **odds ratios**.
+
+3.  Explain what is being held constant when interpreting each predictor in your model.
+
+Use inline R code referencing your `tidy()` results so that the numerical values in your written interpretation update automatically when the model is re-estimated.
+
+For example, you can use `filter()` and `pull()` to retrieve the coefficient estimates, odds ratios, and confidence interval limits for a particular predictor.
+
+```{r, coefficients}
+
+
+exp(fixef(selected_model)$cond)
+
+# Odds ratios and 95% confidence intervals
+odds_results <- coefficient_results |>
+  mutate(
+    OR = exp(estimate),
+    OR_lower = exp(conf.low),
+    OR_upper = exp(conf.high)
+  )
+
+odds_results |>
+  select(term, OR, OR_lower, OR_upper)
+
+
+sex_result <- odds_results |>
+  filter(term == "Sex.Binary")
+
+class2_result <- odds_results |>
+  filter(term == "Pclass2")
+
+class3_result <- odds_results |>
+  filter(term == "Pclass3")
+
+age_result <- odds_results |>
+  filter(term == "Age")
+
+
+```
+
+You should not manually type coefficient estimates, odds ratios, or confidence intervals into your narrative.
+
+**Sex.** Holding ticket class and age constant, female passengers had `r round(sex_result$estimate, 3)` higher log-odds of survival than male passengers. This corresponds to `r round(sex_result$OR, 2)` times the odds of survival, 95% CI [`r round(sex_result$OR_lower, 2)`, `r round(sex_result$OR_upper, 2)`].
+
+**Ticket class.** Holding sex and age constant, second-class passengers had `r round(class2_result$estimate, 3)` lower log-odds of survival compared with first-class passengers. Their odds of survival were `r round(class2_result$OR, 2)` times those of first-class passengers, 95% CI [`r round(class2_result$OR_lower, 2)`, `r round(class2_result$OR_upper, 2)`].
+
+Similarly, third-class passengers had `r round(class3_result$estimate, 3)` lower log-odds of survival compared with first-class passengers, holding sex and age constant. Their odds of survival were `r round(class3_result$OR, 2)` times those of first-class passengers, 95% CI [`r round(class3_result$OR_lower, 2)`, `r round(class3_result$OR_upper, 2)`].
+
+**Age.** Holding sex and ticket class constant, each additional year of age was associated with a `r round(age_result$estimate, 3)` change in the log-odds of survival. The corresponding odds ratio was `r round(age_result$OR, 3)`, 95% CI [`r round(age_result$OR_lower, 3)`, `r round(age_result$OR_upper, 3)`], indicating approximately `r round((1 - age_result$OR) * 100, 2)`% lower odds of survival per additional year.
+
+
+### **5.4. Report overall model performance**
+
+Using `gt()`, create a table reporting the overall model performance for your preferred model.
+
+```{r, performance table}
+
+
+selected_row |>
+  select(
+    Model,
+    AIC,
+    BIC,
+    logLik,
+    deviance,
+    Residual_df,
+    Nested_df,
+    Nested_chisq,
+    Nested_p
+  ) |>
+  gt() |>
+  tab_header(
+    title = "Preferred Model Performance"
+  ) |>
+  cols_label(
+    Model = "Model",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "Log-likelihood",
+    deviance = "Deviance",
+    Residual_df = "Residual df",
+    Nested_df = "Nested df",
+    Nested_chisq = "Nested χ²",
+    Nested_p = "Nested p"
+  ) |>
+  fmt_number(
+    columns = c(
+      AIC, BIC, logLik,
+      deviance, Nested_chisq
+    ),
+    decimals = 2
+  ) |>
+  fmt(
+    columns = Nested_p,
+    fns = function(x) {
+      ifelse(
+        x < .001,
+        "< .001",
+        sprintf("%.3f", x)
+      )
+    }
+  )
+
+```
+
+### **5.5. Provide an overarching paragraph summarizing your results**
+
+Provide a summary of the analysis you conducted, along with the results of your preferred model (in the metric of **odd ratios**).
+
+We fitted four nested binary logistic regression models to investigate the associations between sex, ticket class, age, and Titanic survival among 714 passengers. The preferred model included all three predictors and demonstrated the best balance between fit and complexity (AIC = `r round(AIC(selected_model), 2)`, BIC = `r round(BIC(selected_model), 2)`).
+
+Holding ticket class and age constant, female passengers had significantly higher odds of survival than male passengers, OR = `r round(sex_result$OR, 2)`, 95% CI [`r round(sex_result$OR_lower, 2)`, `r round(sex_result$OR_upper, 2)`].
+
+Holding sex and age constant, second-class passengers had lower survival odds compared with first-class passengers, OR = `r round(class2_result$OR, 2)`, 95% CI [`r round(class2_result$OR_lower, 2)`, `r round(class2_result$OR_upper, 2)`]. Similarly, third-class passengers had lower survival odds than first-class passengers, OR = `r round(class3_result$OR, 2)`, 95% CI [`r round(class3_result$OR_lower, 2)`, `r round(class3_result$OR_upper, 2)`].
+
+Finally, holding sex and ticket class constant, each additional year of age was associated with lower odds of survival, OR = `r round(age_result$OR, 3)`, 95% CI [`r round(age_result$OR_lower, 3)`, `r round(age_result$OR_upper, 3)`].
+
+Overall, sex, ticket class, and age were all statistically significant predictors of survival.
+
+
+### **5.6. Visualize one of your predictors using `ggeffects`**
+
+Using `ggeffects::ggpredict()` and `ggplot2`, select one predictor from your preferred model and visualize it's association with the outcome variable, `Survived`.
+
+```{r, final plot}
+
+
+pred_age <- ggpredict(
+  selected_model,
+  terms = "Age [1:80 by=1]",
+  condition = c(Sex.Binary = 0, Pclass = "1")
+)
+
+ggplot(pred_age, aes(x, predicted)) +
+  geom_ribbon(
+    aes(ymin = conf.low, ymax = conf.high),
+    alpha = 0.18
+  ) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    x = "Passenger Age",
+    y = "Predicted Probability of Survival",
+    title = "Predicted Titanic Survival by Age"
+  ) +
+  theme_classic()
+
+
+```
+Figure 1 illustrates the association between passenger age and predicted survival probability for male passengers traveling in first class. Predicted survival probability decreases with increasing age, from approximately 77% at age 1 to 15% at age 80. This pattern is consistent with the negative age coefficient estimated in the logistic regression model. The shaded region represents the 95% confidence interval around the predictions. Although the relationship appears curved on the probability scale, this is expected under the logistic link function. Overall, the visualization suggests that older passengers had lower predicted survival probabilities when sex and ticket class were held constant.
+
+
+------------------------------------------------------------------------
+
+## **Part 6: Discuss your findings and limitations**
+
+What do your results suggest about the relative importance of sex, ticket type (proxy for SES), and age for survival outcomes on the Titanic?
+
+The results suggest that sex, ticket class, and age were all significantly associated with survival during the Titanic disaster. Female passengers had substantially higher odds of survival than male passengers, consistent with the historical prioritization of women and children during emergencies. Passenger class was also strongly associated with survival, with second- and third-class passengers having lower odds of survival than first-class passengers. This pattern may reflect socioeconomic inequalities in access to evacuation resources. Additionally, increasing age was associated with lower survival odds, although the effect of age was estimated per year and should not be directly compared with categorical predictors when evaluating their relative importance.
+
+Several limitations should be considered. First, the analysis is observational, meaning that the associations cannot establish causality. Second, ticket class serves only as a proxy for socioeconomic status and may not fully capture passengers' socioeconomic circumstances. Third, other potentially relevant factors, such as proximity to lifeboats, cabin location, and family relationships, were not included. Furthermore, the analysis was restricted to 714 passengers with complete data, potentially introducing selection bias. Finally, the model assumes a linear relationship between age and the log-odds of survival and does not include interactions between predictors.
+
+Overall, the findings suggest that demographic characteristics and passenger class were important correlates of survival, while highlighting the need to consider historical context and unmeasured factors when interpreting these relationships.
+
+------------------------------------------------------------------------
+
+## **Part 7: Render, publish, and submit**
+
+### **7.1. Verify reproducibility**
+
+Before submitting your work:
+
+1.  Save your Quarto document.
+
+2.  Restart your R session.
+
+3.  Render your Quarto document from a clean session.
+
+4.  Confirm that all tables, figures, and inline statistical results are generated successfully.
+
+5.  Inspect the rendered HTML report for formatting problems.
+
+Your report should not depend on objects created manually in the R Console.
+
+### **7.2. Publish to GitHub Pages**
+
+Following the workflow from Lab 1:
+
+1.  Commit your completed Quarto document.
+
+2.  Commit the rendered output in docs/.
+
+3.  Push your changes to GitHub.
+
+4.  Verify that your GitHub Pages website displays the completed report.
+
+### **7.3. Submit your work**
+
+Submit the following links:
+
+- **GitHub repository:** Your source code and project files.
+
+- **GitHub Pages website:** Your rendered statistical report.
+
+Your report should contain all required analyses, tables, figures, interpretations, and conclusions.
+
+------------------------------------------------------------------------
+
+## **Final submission checklist**
+
+### **Data exploration**
+
+- Dataset loaded and analysis variables identified.
+
+- Descriptive statistics presented in a formatted table.
+
+- Cell counts explored and presented.
+
+- Exploratory patterns discussed.
+
+### **Model specification and comparison**
+
+- Four prescribed binary logistic regression models estimated.
+
+- Nested-model χ²-tests conducted.
+
+- Model-level statistics extracted using `broom.mixed::glance()`.
+
+- Combined model-comparison table created using `gt()`.
+
+- Model-comparison results interpreted.
+
+### **Diagnostics and model selection**
+
+- Binary logistic regression diagnostics examined.
+
+- Diagnostic plots included.
+
+- Potential assumption violations discussed.
+
+- Preferred model selected and justified.
+
+### **Reporting and interpretation**
+
+- Coefficient table generated using `tidy()` and `gt()`.
+
+- Coefficients interpreted in context.
+
+- AIC, BIC, and Likelihood-ratio test (χ²) reported.
+
+- Visualization with `ggeffects::ggpredict()` reported.
+
+- Numerical interpretations generated using inline R code.
+
+- Substantive conclusions and limitations discussed.
+
+### **Reproducibility and submission**
+
+- Quarto document renders from a clean R session.
+
+- Code, tables, plots, and written interpretations are synchronized.
+
+- Changes committed and pushed to GitHub.
+
+- GitHub Pages website verified.
+
+- Repository and website links submitted.
+
+------------------------------------------------------------------------
+
+## **AI Use Disclosure**
+
+I used OpenAI ChatGPT to assist with troubleshooting R/Quarto code and refining the clarity of written explanations. I reviewed and edited the suggestions and remain responsible for the final analyses, results, and interpretations in this report.
